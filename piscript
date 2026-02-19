@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+import time, json
+from statistics import median
+from web3 import Web3
+from gpiozero import Device
+from gpiozero.pins.lgpio import LGPIOFactory
+Device.pin_factory = LGPIOFactory()
+from gpiozero import DistanceSensor
+
+# ------------------- KONFIG -------------------
+PC_RPC = "http://141.44.206.249:7545"                 # IP adresse von pc
+CONTRACT_ADDRESS = "0xFfA2696a7dbe9Cd2d191729a5fAA0C891a17c862"        # aaus remix via injected provider metamask
+ABI_PATH = "/home/group3/parking_oracle/ParkingABI.json"                   # ABI aus Remix exportieren (Copy ABI-Button im Contract-Tab)
+
+ORACLE_PRIVATE_KEY = "0x6c3810792932cf009a569c9f2f0317553ecbda2129d32ed9c13ca8a2b9949bdf"         # Private Key der ORACLE-Adresse (hat Test-ETH) 
+SPOT_ID = 1
+
+# Demo-Geometrie: Decke ~30cm
+# Hysterese:
+D_OCC_CM = 20.0    # <= 20cm => "belegt"
+D_FREE_CM = 27.0   # >= 27cm => "frei"
+
+# Debounce: wie viele Messungen in Folge nötig, bevor wir den Zustand umschalten
+N = 3              # für Demo schnell. (Wenn zu empfindlich: auf 5 erhöhen)
+
+# Sensor Setup (deine Pins)
+# max_distance=1.0 => sensor.distance * 100 ~ cm
+sensor = DistanceSensor(echo=18, trigger=17, max_distance=1.0)
+
+# ------------------------------------------------
+def read_distance_cm(samples=3, delay_s=0.05):
+    """
+    Liest einige Samples und gibt den Median in cm zurück.
+    Median filtert Ausreißer besser weg als ein einzelner Wert.
+    """
+    vals = []
+    for _ in range(samples):
+        d = sensor.distance  # 0.0..1.0
+        if d is None:
+            time.sleep(delay_s)
+            continue
+        cm = d * 100.0
+        # einfache Plausibilitätsgrenzen für eure Demo (0..100cm)
+        if 0.5 <= cm <= 100.0:
+            vals.append(cm)
+        time.sleep(delay_s)
+    if not vals:
+        return None
+    return median(vals)
+# ------------------------------------------------
+
+w3 = Web3(Web3.HTTPProvider(PC_RPC))
+assert w3.is_connected(), "RPC nicht erreichbar. Prüfe PC-IP/Port und dass Ganache/Hardhat im LAN lauscht."
+
+with open(ABI_PATH, "r") as f:
+    abi = json.load(f)
+
+c = w3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=abi)
+
+acct = w3.eth.account.from_key(ORACLE_PRIVATE_KEY)
+ORACLE_ADDR = acct.address
+
+def send_tx(fn):
+    nonce = w3.eth.get_transaction_count(ORACLE_ADDR)
+
+    latest = w3.eth.get_block("latest")
+    base_fee = latest.get("baseFeePerGas", 0)
+
+    # Priority fee (tip) for local dev; 1 gwei is fine
+    priority = w3.to_wei(1, "gwei")
+
+    # Max fee must be >= base fee; use base*2 + priority
+    max_fee = base_fee * 2 + priority
+
+    tx = fn.build_transaction({
+        "from": ORACLE_ADDR,
+        "nonce": nonce,
+        "gas": 300000,
+        "maxPriorityFeePerGas": priority,
+        "maxFeePerGas": max_fee,
+        "chainId": w3.eth.chain_id,
+    })
+
+    signed = w3.eth.account.sign_transaction(tx, ORACLE_PRIVATE_KEY)
+
+    raw = getattr(signed, "rawTransaction", None)
+    if raw is None:
+        raw = signed.raw_transaction
+
+    tx_hash = w3.eth.send_raw_transaction(raw)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    print("TX mined:", tx_hash.hex(), "status:", receipt.status)
+
+
+
+occupied = False
+occ_hits = 0
+free_hits = 0
+
+print("Oracle address:", ORACLE_ADDR)
+print("Starting loop... thresholds:",
+      f"OCC<= {D_OCC_CM}cm, FREE>= {D_FREE_CM}cm, N={N}")
+
+while True:
+    cm = read_distance_cm(samples=3, delay_s=0.05)
+    if cm is None:
+        print("No valid distance reading")
+        time.sleep(1)
+        continue
+
+    print(f"distance={cm:5.1f}cm | occupied={occupied} | hits occ/free={occ_hits}/{free_hits}")
+
+    if not occupied:
+        # Kandidat belegt?
+        if cm <= D_OCC_CM:
+            occ_hits += 1
+        else:
+            occ_hits = 0
+
+        if occ_hits >= N:
+            print("==> OCCUPIED detected -> reportOccupied")
+            try:
+                send_tx(c.functions.reportOccupied(SPOT_ID))
+                occupied = True
+            except Exception as e:
+                # Häufigster Grund: "not checked in"
+                print("reportOccupied failed:", e)
+            finally:
+                occ_hits = 0
+                free_hits = 0
+
+    else:
+        # Kandidat frei?
+        if cm >= D_FREE_CM:
+            free_hits += 1
+        else:
+            free_hits = 0
+
+        if free_hits >= N:
+            print("==> FREE detected -> reportFree")
+            try:
+                send_tx(c.functions.reportFree(SPOT_ID))
+                occupied = False
+            except Exception as e:
+                print("reportFree failed:", e)
+            finally:
+                occ_hits = 0
+                free_hits = 0
+
+    time.sleep(1)
