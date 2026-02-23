@@ -19,21 +19,21 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         uint256 startTime; // billing begins here
     }
 
-// global parameters and adresses
+    // global parameters and adresses
 
     address public oracle; // The raspberry pi (sensor system)
     uint256 public pricePerMinuteWei; // billing rate for parking
     uint256 public minDepositWei; // minimum deposit needed to fund parking
     uint256 public checkInTimeoutSec = 5 minutes; // the window for CHECKED_IN, if no confirmation from sensor, driver can cancel and get deposit back.
 
-// storage mapping
+    // storage mapping
 
     mapping(uint256 => Spot) public spots; // stores the data of spot by spotId. Public creates getter function
 
     // Tracks how much ETH is reserved for active deposits (must not be withdrawable).
     uint256 public totalDepositsLocked;
 
-// Events
+    // Events
 
     event CheckedIn(uint256 indexed spotId, address indexed driver, uint256 depositWei); // Driver deposits and reserves a spot 
     event CheckInCancelled(uint256 indexed spotId, address indexed driver, uint256 refundWei); // Driver cancels check in and receives full refund after timeout
@@ -42,15 +42,16 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
     event ForceReset(uint256 indexed spotId, SpotState oldState, address indexed oldDriver, uint256 refundWei); // Owner does emergency reset
     event ForceEnd(uint256 indexed spotId, address indexed driver, uint256 feeWei, uint256 refundWei); // Owner ends parking with normal flow
 
-// Oracle authorization modifier
-// restricts sensor functions to Pi key. Without this modifier any account can mark spots as occupied or free.
+    // Oracle authorization modifier
+    // restricts sensor functions to Pi key. Without this modifier any account can mark spots as occupied or free.
+    
     modifier onlyOracle() {
         require(msg.sender == oracle, "not oracle");
         _;
     }
 
-// Constructor
-// Initializes the owner, the oracle address, the price and the minimum deposit.
+    // Constructor
+    // Initializes the owner, the oracle address, the price and the minimum deposit.
     constructor( 
         uint256 _pricePerMinuteWei,
         address _oracle,
@@ -61,7 +62,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         oracle = _oracle;
         minDepositWei = _minDepositWei;
     }
-// Pause control
+    // Pause control
 
     function pause() external onlyOwner { // Owner can stop actions that are marked with whenNotPaused
         _pause();
@@ -71,7 +72,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         _unpause();
     }
 
-// Admin setters
+    // Admin setters
 
     function setOracle(address _oracle) external onlyOwner { // Changes the orcale key if key is compromised or change needed.
         require(_oracle != address(0), "zero oracle");
@@ -91,7 +92,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         checkInTimeoutSec = _timeoutSec;
     }
 
-// Withdraw
+    // Withdraw
 
     // Shows how much the owner can safely withdraw (fees only).
     function withdrawable() public view returns (uint256) {
@@ -113,14 +114,14 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         require(ok, "withdraw failed");
     }
 
-// Driver check in 
+    // Driver check in 
 
     function checkIn(uint256 spotId) external payable whenNotPaused { // User can enter the contract and must be payable to accept the deposit of user. 
         Spot storage s = spots[spotId]; // Loads storage slot for chosen spotId 
         require(s.state == SpotState.FREE, "spot not free"); // Prevents double booking
         require(msg.value >= minDepositWei, "deposit too small"); // Requires user to deposit the minimum
 
-// writes the reservation and timestamps
+        // writes the reservation and timestamps
         s.state = SpotState.CHECKED_IN;
         s.driver = msg.sender;
         s.depositWei = msg.value;
@@ -133,7 +134,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         emit CheckedIn(spotId, msg.sender, msg.value); // records it off-chain
     }
 
-// Driver cancels check in 
+    // Driver cancels check in 
 
     function cancelCheckIn(uint256 spotId) external nonReentrant whenNotPaused { // allows driver to cancel check in ande get deposit back when sensor didnt signal occupied
         Spot storage s = spots[spotId];
@@ -141,7 +142,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         require(s.driver == msg.sender, "not driver"); // Caller must be the same driver/ user
         require(block.timestamp >= s.checkInTime + checkInTimeoutSec, "timeout not reached"); // timout mechanism needs to be done
 
-// the refund amount and driver adress are cached before the reset
+        // the refund amount and driver adress are cached before the reset
         uint256 refundWei = s.depositWei; 
         address driver = s.driver;
 
@@ -156,7 +157,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         emit CheckInCancelled(spotId, driver, refundWei); // Emits CheckInCancelled
     }
 
-// Oracle reports occupied
+    // Oracle reports occupied
 
     function reportOccupied(uint256 spotId) external onlyOracle whenNotPaused { // Pi confirms the arrival of user (car/ vehicle)
         Spot storage s = spots[spotId];
@@ -169,7 +170,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         emit Occupied(spotId, s.startTime); // Emits Occupied
     }
 
-// Oracle report free
+    // Oracle report free
 
     function reportFree(uint256 spotId) external onlyOracle nonReentrant whenNotPaused { // Pi confirms the car left, ends the billing of the user and resolves the contract
         Spot storage s = spots[spotId];
@@ -177,7 +178,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         _finalizeAndReset(spotId, s, block.timestamp); // Calls finalizeAndReset
     }
 
-// Owner emgerncy reset
+    // Owner emgerncy reset
 
     function forceResetSpot(uint256 spotId) external onlyOwner nonReentrant { // Allows owner for manual recovery when something is stuck or there are sensor issues. Function refunds the full deposit and resets the spot.
         Spot storage s = spots[spotId];
@@ -200,7 +201,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         emit ForceReset(spotId, oldState, oldDriver, refundWei);
     }
 
-// Owner force end
+    // Owner force end
 
     function forceEndParking(uint256 spotId) external onlyOwner nonReentrant { // Owner has the ability to manually settle the contract if oracle can not report free (sensor issues)
         Spot storage s = spots[spotId];
@@ -218,7 +219,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         s.startTime = 0;
     }
 
-// Settlement helper
+    // Settlement helper
 
     function _finalizeAndReset( // Bills the user and refunds the rest of deposit
         uint256 spotId,
