@@ -2,9 +2,9 @@
 pragma solidity ^0.8.20; // Compiler version >= 0.8.20 
 
 // Imports from OpenZeppelin
-import "@openzeppelin/contracts/access/Ownable.sol"; // provides standard ownership with owner(), onlyOwner, transferOwnership, renounceOwnership
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol"; // nonReentrant modifier. Prevents reentering on functions that use nonReentrant and that send ETH or call external contracts.
-import "@openzeppelin/contracts/security/Pausable.sol"; // emergency mechanism to stop contract. Mechanism with whenNotPaused/ whenPaused
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol"; // provides standard ownership with owner(), onlyOwner, transferOwnership, renounceOwnership
+import { ReentrancyGuard } from "@openzeppelin/contracts/security/ReentrancyGuard.sol"; // nonReentrant modifier. Prevents reentering on functions that use nonReentrant and that send ETH or call external contracts.
+import { Pausable } from "@openzeppelin/contracts/security/Pausable.sol"; // emergency mechanism to stop contract. Mechanism with whenNotPaused/ whenPaused
 
 // Contract declaration
 
