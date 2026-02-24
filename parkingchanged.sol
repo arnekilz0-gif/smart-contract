@@ -9,8 +9,10 @@ import { Pausable } from "@openzeppelin/contracts/security/Pausable.sol"; // eme
 // Contract declaration
 
 contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules are applied
+    // subsequent code is taken from [https://docs.soliditylang.org/en/latest/structure-of-a-contract.html#enum-types]
     enum SpotState { FREE, CHECKED_IN, OCCUPIED } // Finite state machine for the parking spot (FREE: spot is unused; CHECKED_IN: driver deposited, contract waiting for sensor confirmation; OCCUPIED: driver is parked, contract is tracking time) 
 
+    // subsequent code is taken from [https://docs.soliditylang.org/en/latest/structure-of-a-contract.html#struct-types] and enables that several variables can be grouped in one type
     struct Spot { // Contains all the data for one spot in one place
         SpotState state; // lifecycle state
         address driver; // driver adress
@@ -20,21 +22,21 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
     }
 
     // global parameters and adresses
-
+    // subsequent code is taken from [https://docs.soliditylang.org/en/v0.8.34/cheatsheet.html#function-visibility-specifiers] and is visible externally and internally and creates a getter function
     address public oracle; // The raspberry pi (sensor system)
     uint256 public pricePerMinuteWei; // billing rate for parking
     uint256 public minDepositWei; // minimum deposit needed to fund parking
     uint256 public checkInTimeoutSec = 5 minutes; // the window for CHECKED_IN, if no confirmation from sensor, driver can cancel and get deposit back.
 
     // storage mapping
-
+    // subsequent code is taken from [https://docs.soliditylang.org/en/latest/types.html#mapping-types]
     mapping(uint256 => Spot) public spots; // Maps spotId to its stored struct. The public keyword generates a getter.
 
     // Financial variable
     uint256 public totalDepositsLocked; // total deposits currently reserved
 
     // Events
-
+    // subsequent code is taken from [https://docs.soliditylang.org/en/latest/contracts.html#events]
     event CheckedIn(uint256 indexed spotId, address indexed driver, uint256 depositWei); // Driver deposits and reserves a spot 
     event CheckInCancelled(uint256 indexed spotId, address indexed driver, uint256 refundWei); // Driver cancels check in and receives full refund after timeout
     event Occupied(uint256 indexed spotId, uint256 startTime); // Oracle confirms the presence of a car and billing starts
@@ -44,7 +46,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
 
     // Oracle authorization modifier
     // restricts sensor functions to Pi key. Without this modifier any account can mark spots as occupied or free.
-    
+    // subsequent code is taken from [https://docs.soliditylang.org/en/latest/contracts.html#function-modifiers] and is used to change the behaviour of functions in a declarative way. In Addition code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors] to add a custom error that shows when the condition is false. 
     modifier onlyOracle() {
         require(msg.sender == oracle, "not oracle");
         _; // inserts the function body at that point.
@@ -52,31 +54,33 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
 
     // Constructor
     // Initializes the owner, the oracle address, the price and the minimum deposit.
+    // subsequent code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#constructor] to declare the constructor function
     constructor( 
         uint256 _pricePerMinuteWei,
         address _oracle,
         uint256 _minDepositWei
-    ) Ownable(msg.sender) { // Sets initial owner
-        require(_oracle != address(0), "zero oracle"); // Requires that the oracle address is not zero. Zero Oracle would permanently disable oracle restricted flows.
+        // subsequent code is taken from her [https://docs.openzeppelin.com/contracts/5.x/api/access#Ownable] and sets the intial owner
+    ) Ownable(msg.sender) { 
+        require(_oracle != address(0), "zero oracle"); // Code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors]. It now requires that the oracle address is not zero. Zero Oracle would permanently disable oracle restricted flows.
         pricePerMinuteWei = _pricePerMinuteWei; // price
         oracle = _oracle; // oracle
         minDepositWei = _minDepositWei; // minimum deposit
     }
     // Pause control
     // pause() and unpause() allow the owner to stop the mechanism. Designed to freeze flow without destroying state.
-
+    // The following functions follow this code [https://docs.soliditylang.org/en/latest/contracts.html#functions]. Code from [https://docs.soliditylang.org/en/latest/contracts.html#function-visibility] and [https://docs.openzeppelin.com/contracts/5.x/api/access#Ownable] is used to change visibility and add access modifier.
     function pause() external onlyOwner { // Owner can stop actions that are marked with whenNotPaused
-        _pause();
+        _pause(); // this code is taken from [https://docs.openzeppelin.com/contracts/5.x/api/utils#Pausable]
     }
 
     function unpause() external onlyOwner { // Owner resumes the actions.
-        _unpause();
+        _unpause(); // this code is taken from [https://docs.openzeppelin.com/contracts/5.x/api/utils#Pausable]
     }
 
     // Admin setters
-
+    // The following functions have external visibility and an onlyOwner modifier with code from [https://docs.soliditylang.org/en/latest/contracts.html#function-visibility and https://docs.openzeppelin.com/contracts/5.x/api/access#Ownable] 
     function setOracle(address _oracle) external onlyOwner { // Changes the orcale key if key is compromised or change needed.
-        require(_oracle != address(0), "zero oracle");
+        require(_oracle != address(0), "zero oracle"); // Code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors]. It now requires that the oracle address is not zero. Zero Oracle would permanently disable oracle restricted flows.
         oracle = _oracle;
     }
 
@@ -89,23 +93,27 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
     }
 
     function setCheckInTimeout(uint256 _timeoutSec) external onlyOwner { // Changes the timeout and avoids absurd values that will break flow of the contract.
-        require(_timeoutSec >= 60, "timeout too small");
+        require(_timeoutSec >= 60, "timeout too small"); // Code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors]. This requires that the minimum timeout can not be smaller than 60 seconds.
         checkInTimeoutSec = _timeoutSec;
     }
 
     // Withdraw Logic
-
+    // This is the only way to withdraw funds from the contract. Withdrawable shows how much balance is in the contract that is not a deposit of a driver that is still parking.
+    // The withdraw function is then used to transfer the withdrawable balance to any address.
     // Shows how much the owner can safely withdraw (fees only).
+    // Subsequent code is taken from here [https://docs.soliditylang.org/en/latest/contracts.html#getter-functions].
     function withdrawable() public view returns (uint256) {
-        return address(this).balance - totalDepositsLocked; // enforces deposit isolation
+        return address(this).balance - totalDepositsLocked; // enforces deposit isolation and an external access
     }
-
+    // With code from here [https://docs.soliditylang.org/en/v0.8.34/types.html#address] the function can send Ether to a plain address.
     function withdraw(address payable to, uint256 amountWei) // Withdraws the specified amount to the specified address 
-        external
-        onlyOwner
-        nonReentrant
-        whenNotPaused
+        // Modifiers
+        external // Code from [https://docs.soliditylang.org/en/latest/contracts.html#function-visibility] to set the visibility to external.
+        onlyOwner // Code from [https://docs.openzeppelin.com/contracts/5.x/api/access#Ownable] to restrict the access.
+        nonReentrant // Code from [https://docs.openzeppelin.com/contracts/5.x/api/utils#ReentrancyGuard] to prevent reentrancy attacks.
+        whenNotPaused // Code from [https://docs.openzeppelin.com/contracts/5.x/api/utils#Pausable] to make the function only callable when not paused.
     {
+        // Subsequent Code is taken from [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors]. It adds custom errors that prevent a faulty transaction.
         require(to != address(0), "zero to"); // Require that the address is not a zero address
 
         uint256 available = withdrawable();
@@ -116,7 +124,8 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
     }
 
     // Driver check in 
-
+    // The following functions with code from [https://docs.soliditylang.org/en/latest/contracts.html#functions] control the check in and the cancellation of a check in of a driver.
+    // Visibility
     function checkIn(uint256 spotId) external payable whenNotPaused { // User can enter the contract and must be payable to accept the deposit of user. 
         Spot storage s = spots[spotId]; // Loads storage slot for chosen spotId 
         require(s.state == SpotState.FREE, "spot not free"); // Require that the spot is free
@@ -136,9 +145,11 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
     }
 
     // Driver cancels check in 
-
+    // This function uses external visibility with code from [https://docs.soliditylang.org/en/latest/contracts.html#function-visibility] and adds a nonReentrant and whenNotPaused modifier with code from [https://docs.openzeppelin.com/contracts/5.x/api/utils#ReentrancyGuard; https://docs.openzeppelin.com/contracts/5.x/api/utils#Pausable]
     function cancelCheckIn(uint256 spotId) external nonReentrant whenNotPaused { // allows driver to cancel check in ande get deposit back when sensor didnt signal occupied
+        // According to solidity documentation [https://docs.soliditylang.org/en/latest/introduction-to-smart-contracts.html#locations] a variable declared with storage becomes a reference to a state variable. This line creates a reference on the saved spot, therefore all changes on s will be saved in the contract.
         Spot storage s = spots[spotId];
+        // Custom errors with code from here [https://docs.soliditylang.org/en/latest/contracts.html#custom-errors]
         require(s.state == SpotState.CHECKED_IN, "not checked in"); // Require that the spot is checked in.
         require(s.driver == msg.sender, "not driver"); // Require that it is the original driver.
         require(block.timestamp >= s.checkInTime + checkInTimeoutSec, "timeout not reached"); // Require that the timeout has been reached.
@@ -147,7 +158,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         uint256 refundWei = s.depositWei; 
         address driver = s.driver;
 
-        // Release reserved deposit before reset/refund.
+        // Release reserved deposit before reset/refund with code from [https://docs.soliditylang.org/en/latest/cheatsheet.html#order-of-precedence-of-operators].
         totalDepositsLocked -= refundWei;
 
         _resetSpot(s); // clears the state before sending amount of ETH/ Wei
@@ -155,6 +166,7 @@ contract ParkingPPX is Ownable, ReentrancyGuard, Pausable { // All three modules
         (bool ok, ) = payable(driver).call{value: refundWei}(""); // Refund uses call
         require(ok, "refund failed"); // Require succes
 
+        // With code from here [https://docs.soliditylang.org/en/latest/contracts.html#example] we emit the event CheckInCancelled and it is stored in the transaction logs.
         emit CheckInCancelled(spotId, driver, refundWei); // Emits CheckInCancelled
     }
 
