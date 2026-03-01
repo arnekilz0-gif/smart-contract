@@ -1,0 +1,234 @@
+# !/usr/bin/env python3
+# The following code reads the sensor data and decides whether a spot is occupied or free. Then it sends this information to the contract address.
+# Because of installation problems with web3 a python environment was created that needs to be opened everytime  you want to start this script.
+#Installing necessary libraries
+
+# Subsequent Code is taken from [https://docs.python.org/3/library/os.html].
+import os
+# Subsequent Code is taken from [https://docs.python.org/3/library/time.html].
+import time
+# Subsequent Code is taken from [https://docs.python.org/3/library/json.html].
+import json
+# Subsequent Code is taken from [https://docs.python.org/3/library/statistics.html].
+from statistics import median
+# Subsequent Code is taken from [https://web3py.readthedocs.io/en/stable/quickstart.html].
+from web3 import Web3
+# Subsequent Code is taken from [https://gpiozero.readthedocs.io/en/v1.6.0/api_generic.html?highlight=device#device; https://gpiozero.readthedocs.io/en/v1.6.0/recipes.html#distance-sensor].
+from gpiozero import Device, DistanceSensor
+# Subsequent Code is taken from [https://gpiozero.readthedocs.io/en/v1.6.0/api_pins.html?highlight=lgpio#gpiozero.pins.lgpio.LGPIOFactory].
+from gpiozero.pins.lgpio import LGPIOFactory
+
+# CONFIGURATION
+PC_RPC = "http://141.44.206.249:7545" # Ip address of pc running the ganache local blockchain.
+CONTRACT_ADDRESS = "0xFfA2696a7dbe9Cd2d191729a5fAA0C891a17c862" # Contract address of the deployed parking contract.
+ABI_PATH = "/home/group3/parking_oracle/ParkingABI.json" # File path of corresponding abi file on the pi.
+
+# Subsequent code is taken from [https://docs.python.org/3/library/os.html#os.environ].
+# It reads an environment variable from the operating system. It would be safer to store the oracle private key on the operating system but for the purpose of this project it can also be hard coded into the script.
+# Ignores the security risk of hard coding the orcale privat key because of demenstration purposes.
+ORACLE_PRIVATE_KEY = os.getenv(
+    "ORACLE_PRIVATE_KEY", # Attempts to load the variable if one exists.
+    "0x6c3810792932cf009a569c9f2f0317553ecbda2129d32ed9c13ca8a2b9949bdf" # Fallback on hard coded key.
+)
+
+# This sensor is used at spot 1.
+SPOT_ID = 1
+
+# Hysteresis thresholds (cm). The ceiling in our demosntration is roughly 23cm high, therefore variables will be set accordingly. In real world scenarios these values need to be adjusted.
+D_OCC_CM = 18.0   # Cccupied if distance <= this.
+D_FREE_CM = 22.0  # Free if distance >= this.
+
+# Debounce: require N consecutive hits before switching state. This value is set for demonstration pruposes. In real world scenarios this value needs to be adjusted according to the situation.
+N = 3
+
+# Sensor sampling (median of SAMPLES).
+SAMPLES = 3
+SAMPLE_DELAY_S = 0.05
+
+# Main loop pacing.
+LOOP_SLEEP_S = 1.0
+
+# Gas limit (contract call upper bound).
+GAS_LIMIT = 300000
+
+# Minimal logging.
+LOG_EVERY_N_LOOPS = 10  # print one status line every N loops.
+
+# GPIO
+# Subsequent code is taken from [https://gpiozero.readthedocs.io/en/v1.6.0/api_generic.html?highlight=device#gpiozero.Device.pin_factory] and [https://gpiozero.readthedocs.io/en/v1.6.0/api_pins.html?highlight=lgpio#gpiozero.pins.lgpio.LGPIOFactory].
+# It forces gpiozero to use the LGPIO driver.
+Device.pin_factory = LGPIOFactory() 
+# Subsequent code is taken from [https://gpiozero.readthedocs.io/en/v1.6.0/api_input.html?highlight=distancesensor#distancesensor-hc-sr04].
+# Creates an ultrasonic distance sensor object.
+sensor = DistanceSensor(
+    echo=18, # Pin that receives.
+    trigger=17, # Pin that sends.
+    max_distance=1.0 # Maximum distance in meters.
+)  
+
+
+def read_distance_cm():
+    """
+    Defines a function that returns robust distance in cm, or None if no valid reading.
+    Uses median over multiple samples to suppress outliers.
+    """
+    vals = [] # Initializes a list.
+    for _ in range(SAMPLES): # Takes multiple measurements.
+        # Reads the current distance and prevents the system from crashing if sensor reads fail.
+        try: 
+            d = sensor.distance  
+        except Exception:
+            d = None
+
+        # Only successful measurements are processed.
+        if d is not None:
+            cm = d * 100.0
+            # Reject glitchy readings (too small/too large).
+            if 0.5 <= cm <= 100.0:
+                vals.append(cm) # Only adds valid measurements to the list.
+
+        # Waits briefly between samples.
+        time.sleep(SAMPLE_DELAY_S)
+
+    # Returns statistical median.
+    return median(vals) if vals else None
+
+
+# WEB3 with GANACHE
+
+# Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/providers.html#httpprovider] and sets the provider.
+# To raise SystemExit code is take from [https://realpython.com/ref/builtin-exceptions/systemexit/].
+w3 = Web3(Web3.HTTPProvider(PC_RPC))
+# Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/quickstart.html#local-providers] and with the help of if statements the connection gets interrupted and raises an exit.
+if not w3.is_connected():
+    raise SystemExit(
+        "RPC not reachable. Check Ganache IP/port and network connectivity." # Print Statement 
+    )
+# Subsequent Code is taken from [https://web3py.readthedocs.io/en/stable/web3.main.html#addresses] to return the given address.
+addr = Web3.to_checksum_address(CONTRACT_ADDRESS)
+# Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.get_code].
+# It requests the bytecode stored at address.
+if w3.eth.get_code(addr) in (b"", b"\x00"): # If no code is stored or zero byte then it raises SystemExit.
+    raise SystemExit(
+        "No contract code at CONTRACT_ADDRESS. Wrong address or wrong network?" # Print Statement.
+    )
+# Subsequent code is taken from [https://docs.python.org/3/library/functions.html#open].
+with open(ABI_PATH, "r") as f: # r means open file in read mode. f is for temporary referencing.
+    #Subsequent code is taken from [https://docs.python.org/3/library/json.html#json.load].
+    abi = json.load(f) # Reads the file content and parses it as JSON into python object.
+
+# Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.contract].
+# Binding the deployed contract address together with its abi.
+c = w3.eth.contract(address=addr, abi=abi)
+
+# Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.account.html#reading-a-private-key-from-an-environment-variable].
+# Enables script to sign transactions as oracle address.
+# The private key is converted to an account (key, address). 
+acct = w3.eth.account.from_key(ORACLE_PRIVATE_KEY)
+# Gets the public address from the key.
+ORACLE_ADDR = acct.address
+
+
+def send_tx(fn):
+    """
+    Defines a function that builds and prepares a state-changing blockchain transaction from a contract call.
+    """
+    # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.contract.html#web3.contract.ContractFunction.build_transaction].
+    tx = fn.build_transaction({
+        "from": ORACLE_ADDR, # Sender address.
+        # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.get_transaction_count].
+        "nonce": w3.eth.get_transaction_count(ORACLE_ADDR, "pending"), # Retrieves next usable nonce. Pending prevents errors.
+        "gas": GAS_LIMIT, # Sets the gas limit.
+        # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.gas_price]
+        "gasPrice": w3.eth.gas_price, # Uses current network gas price.
+        # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.chain_id].
+        "chainId": w3.eth.chain_id, # Ensures transaction is valid for only the connected blockchain.
+    })
+    # Purpose of the following code: sign, send, wait, verify and return hash.
+    # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.send_raw_transaction].
+    signed = w3.eth.account.sign_transaction(tx, ORACLE_PRIVATE_KEY) # Signs the transaction wit hthe oracle private key.
+    # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.send_raw_transaction].
+    # Some version use signed.rawTransaction others use signed.raw_transaction. With code from [https://docs.python.org/3/library/functions.html#getattr] the function ensures one of them is safe for use.
+    raw = getattr(signed, "rawTransaction", signed.raw_transaction)
+
+    # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/transactions.html#chapter-2-w3-eth-send-raw-transaction].
+    txh = w3.eth.send_raw_transaction(raw) # Sends signed transaction to blockchain.
+    
+    # Subsequent code is taken from [https://web3py.readthedocs.io/en/stable/web3.eth.html#web3.eth.Eth.wait_for_transaction_receipt].
+    r = w3.eth.wait_for_transaction_receipt(txh) # Returns transaction receipt.
+
+    # Subsequent code is taken from [https://docs.python.org/3/library/functions.html#hex]. 
+    if r.status != 1: # Checks for result. If 1 then success if 0 then reverted.
+        raise RuntimeError(f"Transaction reverted (status=0), tx={txh.hex()}") # Raising an error and stopping function.
+
+    return txh.hex() # Returns a hexadecimal string.
+
+
+# LOOP
+
+# Spot is assumed free.
+occupied = False 
+
+# Set to zero for debounce logic and avoid triggering on a single reading.
+occ_hits = 0 
+free_hits = 0
+
+# Loop iteration counter.
+loop_i = 0
+
+# Printing Statements.
+print("Oracle:", ORACLE_ADDR)
+print(f"Running. OCC<= {D_OCC_CM}cm, FREE>= {D_FREE_CM}cm, N={N}")
+
+# Subsequent code is taken from [https://docs.python.org/3/reference/compound_stmts.html#while].
+# It creates a never ending loop (real-time oracle).
+while True:
+    loop_i += 1 # Adds to the loop counter.
+
+    cm = read_distance_cm() # Stores distance measurement.
+    
+    # In the following code snippet there will be use of if, continue, try and except statements from [https://docs.python.org/3/reference/compound_stmts.html#compound-statements].
+    # This section handles measurements that are not valid.
+    if cm is None:
+        # Quiet fail: just slow down and retry.
+        time.sleep(LOOP_SLEEP_S) 
+        continue # Skips rest of loop and starts again.
+
+    # Reduced status output. Only every 10th iteration the block executes.
+    if (loop_i % LOG_EVERY_N_LOOPS) == 0:
+        # Print statement.
+        print(f"distance={cm:5.1f}cm | occupied={occupied} | hits occ/free={occ_hits}/{free_hits}")
+
+    # Noise resistant transition from FREE to OCCUPIED.
+    if not occupied: # Spot needs to be free.
+        occ_hits = occ_hits + 1 if cm <= D_OCC_CM else 0 # Consecutive readings of values equal/ less than the range of occupied result in trigger of try.
+        if occ_hits >= N:
+            # Build, signs and sends transaction calling reportOccupied.
+            try:
+                tx = send_tx(c.functions.reportOccupied(SPOT_ID))
+                print(f"OCCUPIED -> reportOccupied | tx={tx}")
+                occupied = True # Updates state machine. Therefore no repeated reportOccupied calls.
+            # Exception for catching an error and resets debounce.
+            except Exception as e:
+                print(f"reportOccupied failed: {e}")
+            occ_hits = 0
+            free_hits = 0
+
+    # Noise resistant transition from OCCUPIED TO FREE.
+    else: # Spot needs to be occupied.
+        free_hits = free_hits + 1 if cm >= D_FREE_CM else 0 # Consecutive readings of values equal/ greater than range of free result in trigger of try.
+        if free_hits >= N:
+            # Build, signs and sends transaction calling reportFree.
+            try:
+                tx = send_tx(c.functions.reportFree(SPOT_ID))
+                print(f"FREE -> reportFree | tx={tx}")
+                occupied = False # Updates state machine. Therefore no repeated reportFree calls.
+            # Exception for catching an error and resets debounce.
+            except Exception as e:
+                print(f"reportFree failed: {e}")
+            occ_hits = 0
+            free_hits = 0
+
+    # Subsequent code is from [https://docs.python.org/3/library/time.html#time.sleep]
+    # Next loop iteration is delayed by one second.
+    time.sleep(LOOP_SLEEP_S)
